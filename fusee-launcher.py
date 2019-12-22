@@ -22,15 +22,21 @@
 # greetings to:
 #    shuffle2
 
+# This fork adds support for sending memloader payloads similar to
+# TegraRCMSmash. Data readback for payloads like biskeydump is also
+# supported
+
 # This file is part of Fusée Launcher
 # Copyright (C) 2018 Mikaela Szekely <qyriad@gmail.com>
 # Copyright (C) 2018 Kate Temkin <k@ktemkin.com>
+# Copyright (C) 2019 Tobias Zimmermann <cu3po42@gmail.com>
 # Fusée Launcher is licensed under the terms of the GNU GPLv2
 
 import os
 import sys
 import errno
 import ctypes
+import struct
 import argparse
 import platform
 
@@ -559,6 +565,144 @@ class RCMHax:
 
         return self.backend.trigger_vulnerability(length)
 
+def ensure_write(switch, data):
+    bytes_sent = switch.write(data)
+    if bytes_sent != len(data):
+        print("Expected to send {} bytes, sent {}".format(len(data), bytes_sent))
+        sys.exit(-1)
+
+class MemloaderData(object):
+    class LoadSection(object):
+        def __init__(self, section_name, dataini_path, args):
+            self.section_name = section_name
+            self.file_name = args['if']
+            if self.file_name.startswith("/"):
+                self.file_name = self.file_name[1:]
+            full_path = os.path.join(os.path.dirname(dataini_path), self.file_name)
+            try:
+                with open(full_path, 'rb') as f:
+                    self.file_contents = f.read()
+            except:
+                print("Cannot read file referenced in dataini load section. Is it in the same folder as the .ini?")
+                sys.exit(-1)
+            self.skip = int(args.get('skip', '0'), 0)
+            self.count = int(args.get('count', '0'), 0)
+            self.dst = int(args['dst'], 0)
+
+        def send(self, switch):
+            print("Sending {} ({} bytes) to address 0x{:X}".format(self.file_name, len(self.file_contents), self.dst))
+            if len(self.file_contents) == 0:
+                return
+            RECV_MARKER = "RECV".encode('utf-8')
+            ensure_write(switch, RECV_MARKER)
+            ensure_write(switch, struct.pack('>II', self.dst, len(self.file_contents)))
+            ensure_write(switch, self.file_contents)
+
+    class CopySection(object):
+        def __init__(self, section_name: str, dataini_path: str, args):
+            self.section_name = section_name
+            # TODO: figure out if comp_type is optional
+            self.comp_type = int(args['type'], 0)
+            self.src_addr = int(args['src'], 0)
+            self.src_len = int(args['srclen'], 0)
+            self.dst_addr = int(args['dst'], 0)
+            self.dst_len = int(args['dstlen'], 0)
+
+        def send(self, switch):
+            print("Sending COPY command {} (from 0x{:X}-0x{:X} to 0x{:X}-0x{:X}) type {}".format(
+                self.section_name,
+                self.src_addr,
+                self.src_addr + self.src_len,
+                self.dst_addr,
+                self.dst_addr + self.dst_len,
+                self.comp_type
+            ))
+            COPY_MARKER = "COPY".encode('utf-8')
+            ensure_write(switch, COPY_MARKER)
+            ensure_write(switch, struct.pack(">IIIII",
+                self.comp_type,
+                self.src_addr,
+                self.src_len,
+                self.dst_addr,
+                self.dst_len
+            ))
+
+
+    class BootSection(object):
+        def __init__(self, section_name: str, dataini_path: str, args):
+            self.section_name = section_name
+            self.program_counter = int(args['pc'], 0)
+
+        def send(self, switch):
+            print("Booting AArch64 with PC 0x{:08X}...".format(self.program_counter))
+            BOOT_MARKER = "BOOT".encode('utf-8')
+            ensure_write(switch, BOOT_MARKER)
+            ensure_write(switch, struct.pack(">I", self.program_counter))
+            print("BOOT command sent successfully!")
+
+    def __init__(self, dataIniPath: str):
+        try:
+            with open(dataIniPath, 'r') as f:
+                (load, copy, boot) = self.parselines(dataIniPath, f.readlines())
+                load.sort(key=lambda l: (0 == len(l.section_name), l.dst, l.section_name))
+                self.sections = []
+                self.sections.extend(load)
+                self.sections.extend(copy)
+                self.sections.extend(boot)
+        except Exception as e:
+            print("Could not load the provided dataIni. Is the path correct?")
+            sys.exit(-1)
+
+    def parselines(self, dataini_path: str, lines: [str]):
+        import re
+
+        SECTION_BEGIN = re.compile(r"^ *\[ *(\w+) *: *(\w*) *\] *(?:;.*)?$")
+        KEY_VALUE = re.compile(r"^ *(\w+) *= *(\S+) *(?:;.*)?$")
+        WHITESPACE = re.compile(r"^\s*(?:;.*)?$")
+        section_types = {
+            'load': self.LoadSection,
+            'copy': self.CopySection,
+            'boot': self.BootSection
+        }
+
+        sections = {
+            'load': [],
+            'copy': [],
+            'boot': []
+        }
+        lines = filter(lambda l: not WHITESPACE.match(l), lines)
+        try:
+            next_line = next(lines)
+            while True:
+                m = SECTION_BEGIN.match(next_line)
+                if not m:
+                    print("dataini file is not valid.")
+                    sys.exit(-1)
+                section_type = m[1]
+                section_name = m[2]
+                args = {}
+                try:
+                    while True:
+                        next_line = next(lines)
+                        m = KEY_VALUE.match(next_line)
+                        if not m:
+                            break
+                        args[m[1]] = m[2]
+                except StopIteration as ex:
+                    raise ex
+                finally:
+                    sections[section_type].append(section_types[section_type](section_name, dataini_path, args))
+        except StopIteration:
+            pass
+
+        return (sections['load'], sections['copy'], sections['boot'])
+
+    def has_sections(self):
+        return len(self.sections) > 0
+
+    def send(self, switch):
+        for s in self.sections:
+            s.send(switch)
 
 def parse_usb_id(id):
     """ Quick function to parse VID/PID arguments. """
@@ -574,6 +718,8 @@ parser.add_argument('--override-os', metavar='platform', dest='platform', type=s
 parser.add_argument('--relocator', metavar='binary', dest='relocator', type=str, default="%s/intermezzo.bin" % os.path.dirname(os.path.abspath(__file__)), help='provides the path to the intermezzo relocation stub')
 parser.add_argument('--override-checks', dest='skip_checks', action='store_true', help="don't check for a supported controller; useful if you've patched your EHCI driver")
 parser.add_argument('--allow-failed-id', dest='permissive_id', action='store_true', help="continue even if reading the device's ID fails; useful for development but not for end users")
+parser.add_argument('--dataini', dest='dataini', type=str, default=None, help='send a memloader payload over USB')
+parser.add_argument('-r', '--readback', dest='readback', action='store_true', default=False, help='read and print any data sent by the payload')
 arguments = parser.parse_args()
 
 # Expand out the payload path to handle any user-refrences.
@@ -588,9 +734,19 @@ if not os.path.isfile(intermezzo_path):
     print("Could not find the intermezzo interposer. Did you build it?")
     sys.exit(-1)
 
+# Load dataini argument if it was specified
+dataini = None
+if arguments.dataini is not None:
+    dataini_path = os.path.expanduser(arguments.dataini)
+    if not os.path.isfile(dataini_path):
+        print("Could not find the specified data.ini.")
+        sys.exit(-1)
+    # Parse it now since that triggers loading of specified files
+    dataini = MemloaderData(dataini_path)
+
 # Get a connection to our device.
 try:
-    switch = RCMHax(wait_for_device=arguments.wait, vid=arguments.vid, 
+    switch = RCMHax(wait_for_device=arguments.wait, vid=arguments.vid,
             pid=arguments.pid, os_override=arguments.platform, override_checks=arguments.skip_checks)
 except IOError as e:
     print(e)
@@ -679,7 +835,32 @@ try:
     switch.trigger_controlled_memcpy()
 except ValueError as e:
     print(str(e))
+    sys.exit(-1)
 except IOError:
     print("The USB device stopped responding-- sure smells like we've smashed its stack. :)")
     print("Launch complete!")
 
+if arguments.readback or dataini is not None and dataini.has_sections():
+    import array
+    zero_byte = '\x00'.encode('utf-8')
+    READY_INDICATOR = "READY.\n".encode('utf-8')
+
+    buf = array.array('B', zero_byte * 0x8000)
+    try:
+        while True:
+            bytes_read = switch.read(buf)
+            data_read = buf.tostring()[:bytes_read]
+            if bytes_read == len(READY_INDICATOR) and data_read == READY_INDICATOR:
+                print('Entering command mode.')
+                if dataini is None:
+                    print("No data to send :(")
+                else:
+                    dataini.send(switch)
+                    if not arguments.readback:
+                        sys.exit(0)
+            else:
+                print(data_read.decode('utf-8'))
+    except Exception as e:
+        print("Encountered an exception:")
+        print(repr(e))
+        print(str(e))
