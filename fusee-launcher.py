@@ -121,7 +121,7 @@ class HaxBackend:
 
     def read(self, length):
         """ Reads data from the RCM protocol endpoint. """
-        return bytes(self.dev.read(0x81, length, 1000))
+        return bytes(self.dev.read(0x81, length, 5000))
 
 
     def write_single_buffer(self, data):
@@ -380,7 +380,7 @@ class WindowsBackend(HaxBackend):
         if ret == 0:
             raise ctypes.WinError()
 
-        return buffer.raw
+        return buffer.raw[:len_transferred.value]
 
     def write_single_buffer(self, data):
         """ Write using libusbK """
@@ -841,16 +841,12 @@ except IOError:
     print("Launch complete!")
 
 if arguments.readback or dataini is not None and dataini.has_sections():
-    import array
-    zero_byte = '\x00'.encode('utf-8')
     READY_INDICATOR = "READY.\n".encode('utf-8')
 
-    buf = array.array('B', zero_byte * 0x8000)
     try:
         while True:
-            bytes_read = switch.read(buf)
-            data_read = buf.tostring()[:bytes_read]
-            if bytes_read == len(READY_INDICATOR) and data_read == READY_INDICATOR:
+            data_read = switch.read(0x8000)
+            if data_read == READY_INDICATOR:
                 print('Entering command mode.')
                 if dataini is None:
                     print("No data to send :(")
@@ -859,8 +855,11 @@ if arguments.readback or dataini is not None and dataini.has_sections():
                     if not arguments.readback:
                         sys.exit(0)
             else:
+                print(" ".join("{:02X}".format(ord(c)) for c in data_read))
                 print(data_read.decode('utf-8'))
     except Exception as e:
+        import traceback
         print("Encountered an exception:")
         print(repr(e))
         print(str(e))
+        print(traceback.format_exc())
