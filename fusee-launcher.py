@@ -578,15 +578,15 @@ class MemloaderData(object):
             self.file_name = args['if']
             if self.file_name.startswith("/"):
                 self.file_name = self.file_name[1:]
+            self.offset = int(args.get('skip', '0'), 0)
+            self.length = int(args.get('count', '0'), 0)
             full_path = os.path.join(os.path.dirname(dataini_path), self.file_name)
             try:
                 with open(full_path, 'rb') as f:
-                    self.file_contents = f.read()
+                    self.file_contents = f.read()[self.offset:self.offset+self.length]
             except:
                 print("Cannot read file referenced in dataini load section. Is it in the same folder as the .ini?")
                 sys.exit(-1)
-            self.skip = int(args.get('skip', '0'), 0)
-            self.count = int(args.get('count', '0'), 0)
             self.dst = int(args['dst'], 0)
 
         def send(self, switch):
