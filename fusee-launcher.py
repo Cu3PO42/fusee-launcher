@@ -396,6 +396,7 @@ class WindowsBackend(HaxBackend):
         ret = self.dev.WritePipe(self.handle, ctypes.c_ubyte(0x01), cbuffer, len(data), ctypes.byref(len_transferred), None)
         if ret == 0:
             raise ctypes.WinError()
+        return len_transferred.value
 
     def ioctl(self, driver_handle: ctypes.c_void_p, ioctl_code: ctypes.c_ulong, input_bytes: ctypes.c_void_p, input_bytes_count: ctypes.c_size_t, output_bytes: ctypes.c_void_p, output_bytes_count: ctypes.c_size_t):
         """ Wrapper for DeviceIoControl """
@@ -512,14 +513,20 @@ class RCMHax:
         length = len(data)
         packet_size = 0x1000
 
+        bytes_written = 0
+
         while length:
             data_to_transmit = min(length, packet_size)
             length -= data_to_transmit
 
             chunk = data[:data_to_transmit]
             data  = data[data_to_transmit:]
-            self.write_single_buffer(chunk)
+            written = self.write_single_buffer(chunk)
+            if written < data_to_transmit:
+                return bytes_written + written
+            bytes_written += written
 
+        return bytes_written
 
     def write_single_buffer(self, data):
         """
@@ -583,10 +590,14 @@ class MemloaderData(object):
             full_path = os.path.join(os.path.dirname(dataini_path), self.file_name)
             try:
                 with open(full_path, 'rb') as f:
-                    self.file_contents = f.read()[self.offset:self.offset+self.length]
+                    contents = f.read()
+                    if self.length == 0:
+                        self.length = max(0, len(contents) - self.offset)
+                    self.file_contents = contents[self.offset:self.offset+self.length]
             except:
                 print("Cannot read file referenced in dataini load section. Is it in the same folder as the .ini?")
                 sys.exit(-1)
+            self.file_contents = self.file_contents + b'\x00' * (self.length - len(self.file_contents))
             self.dst = int(args['dst'], 0)
 
         def send(self, switch):
