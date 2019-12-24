@@ -840,6 +840,14 @@ except IOError:
     print("The USB device stopped responding-- sure smells like we've smashed its stack. :)")
     print("Launch complete!")
 
+def optOrd(numOrChar):
+    if type(numOrChar) is int:
+        return numOrChar
+    if (type(numOrChar) is str or type(numOrChar) is bytes) and len(numOrChar) == 1:
+        return ord(numOrChar)
+    print('Expected a number or character, but got ' + repr(numOrChar), file=sys.stderr)
+    return 0x100
+
 if arguments.readback or dataini is not None and dataini.has_sections():
     READY_INDICATOR = "READY.\n".encode('utf-8')
 
@@ -855,7 +863,7 @@ if arguments.readback or dataini is not None and dataini.has_sections():
                     if not arguments.readback:
                         sys.exit(0)
             else:
-                print(" ".join("{:02X}".format(ord(c)) for c in data_read))
+                print(" ".join("{:02X}".format(optOrd(c)) for c in data_read))
                 print(data_read.decode('utf-8'))
     except Exception as e:
         import traceback
