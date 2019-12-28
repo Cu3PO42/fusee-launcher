@@ -130,7 +130,7 @@ class HaxBackend:
         The last packet may be shorter, and should trigger a ZLP (e.g. not divisible by 512).
         If it's not, send a ZLP.
         """
-        return self.dev.write(0x01, data, 1000)
+        return self.dev.write(0x01, data, 5000)
 
 
     def find_device(self, vid=None, pid=None):
