@@ -34,6 +34,7 @@
 
 import os
 import sys
+import time
 import errno
 import ctypes
 import struct
@@ -870,6 +871,7 @@ if arguments.readback or dataini is not None and dataini.has_sections():
                 if dataini is None:
                     print("No data to send :(")
                 else:
+                    time.sleep(1)
                     dataini.send(switch)
                     if not arguments.readback:
                         sys.exit(0)
